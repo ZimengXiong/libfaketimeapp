@@ -1,0 +1,90 @@
+#!/bin/bash
+
+set -euo pipefail
+
+ARCH_CMD=""
+if [ "$1" == "--arch" ]; then
+    if [ -z "$2" ]; then
+        echo "Error: --arch requires an argument"
+        exit 1
+    fi
+    ARCH_CMD="arch -$2"
+    shift 2
+fi
+
+if [ "$#" -ne 2 ]; then
+    echo "Usage: $0 [--arch <arch>] <'YYYY-MM-DD HH:MM:SS'> <ApplicationName>"
+    echo "Example: $0 --arch x86_64 '2018-12-24 08:15:42' 'Google Chrome'"
+    exit 1
+fi
+
+if ! command -v faketime &> /dev/null; then
+    echo "Error: faketime is not installed. Please install it first."
+    exit 1
+fi
+
+TIME_STRING="$1"
+APP_NAME_ARG="$2"
+
+APP_NAME_ARG=${APP_NAME_ARG%/}
+if [[ "${APP_NAME_ARG}" == *.app ]]; then
+    APP_NAME="${APP_NAME_ARG%.app}"
+else
+    APP_NAME="${APP_NAME_ARG}"
+fi
+
+APP_PATH="/Applications/${APP_NAME}.app"
+FAKE_APP_PATH="/Applications/${APP_NAME}_faked.app"
+
+if [ ! -d "${APP_PATH}" ]; then
+    echo "Error: Application '${APP_NAME}.app' not found in /Applications"
+    exit 1
+fi
+
+if [ -d "${FAKE_APP_PATH}" ]; then
+    PLIST_PATH="${FAKE_APP_PATH}/Contents/Info.plist"
+    if [ ! -f "${PLIST_PATH}" ]; then
+        echo "Error: Could not find Info.plist in ${FAKE_APP_PATH}"
+        exit 1
+    fi
+    EXECUTABLE_NAME=$(defaults read "${PLIST_PATH}" CFBundleExecutable)
+    WRAPPER_SCRIPT_PATH="${APP_PATH}/Contents/MacOS/${EXECUTABLE_NAME}"
+    ORIGINAL_EXECUTABLE_PATH="${FAKE_APP_PATH}/Contents/MacOS/${EXECUTABLE_NAME}"
+    cat > "${WRAPPER_SCRIPT_PATH}" << EOL
+#!/bin/bash
+exec ${ARCH_CMD} faketime '${TIME_STRING}' "${ORIGINAL_EXECUTABLE_PATH}" "\$@"
+EOL
+    chmod +x "${WRAPPER_SCRIPT_PATH}"
+    exit 0
+fi
+
+PLIST_PATH="${APP_PATH}/Contents/Info.plist"
+if [ ! -f "${PLIST_PATH}" ]; then
+    echo "Error: Could not find Info.plist for ${APP_NAME}.app"
+    exit 1
+fi
+EXECUTABLE_NAME=$(defaults read "${PLIST_PATH}" CFBundleExecutable)
+ICON_FILE=$(defaults read "${PLIST_PATH}" CFBundleIconFile)
+
+mv "${APP_PATH}" "${FAKE_APP_PATH}"
+chflags hidden "${FAKE_APP_PATH}"
+mkdir -p "${APP_PATH}/Contents/MacOS"
+WRAPPER_SCRIPT_PATH="${APP_PATH}/Contents/MacOS/${EXECUTABLE_NAME}"
+ORIGINAL_EXECUTABLE_PATH="${FAKE_APP_PATH}/Contents/MacOS/${EXECUTABLE_NAME}"
+cat > "${WRAPPER_SCRIPT_PATH}" << EOL
+#!/bin/bash
+exec ${ARCH_CMD} faketime '${TIME_STRING}' "${ORIGINAL_EXECUTABLE_PATH}" "\$@"
+EOL
+chmod +x "${WRAPPER_SCRIPT_PATH}"
+cp "${FAKE_APP_PATH}/Contents/Info.plist" "${APP_PATH}/Contents/Info.plist"
+if [ -n "$ICON_FILE" ]; then
+    mkdir -p "${APP_PATH}/Contents/Resources"
+    ICON_RESOURCE_PATH="${FAKE_APP_PATH}/Contents/Resources/${ICON_FILE}"
+    if [ ! -f "$ICON_RESOURCE_PATH" ]; then
+        ICON_RESOURCE_PATH="${ICON_RESOURCE_PATH}.icns"
+    fi
+    if [ -f "$ICON_RESOURCE_PATH" ]; then
+        cp "$ICON_RESOURCE_PATH" "${APP_PATH}/Contents/Resources/"
+    fi
+fi
+
